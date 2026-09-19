@@ -1,0 +1,214 @@
+# ============================================================================
+# GAME: NEON BREACH - SCI-FI ARENA 3D
+# LANGUAGE: Vortex3D (Pythonic Easy Mode)
+# Easier than Python: Zero boilerplate, no self, no imports, native 3D vectors!
+# ============================================================================
+
+# 1. Environment & Render Pipeline
+environment:
+    volumetric_fog: true
+    fog_color: color.rgb(0.04, 0.05, 0.09)
+    fog_density: 0.015
+    bloom: true
+    screen_space_reflections: true
+    pbr: true
+
+# 2. Game Settings & Variables
+player_speed = 14.0
+jump_force = 11.0
+player_health = 100.0
+score = 0.0
+shoot_cooldown = 0.18
+current_cooldown = 0.0
+game_over = false
+
+# 3. Materials & Shaders
+mat_player = material:
+    albedo: color.rgb(0.10, 0.90, 0.70)
+    metallic: 0.85
+    roughness: 0.15
+    emission: color.rgb(0.05, 0.40, 0.35)
+
+mat_drone = material:
+    albedo: color.rgb(1.00, 0.15, 0.25)
+    metallic: 0.90
+    roughness: 0.20
+    emission: color.rgb(0.60, 0.05, 0.10)
+
+mat_laser = material:
+    albedo: color.rgb(0.00, 1.00, 0.90)
+    emission: color.rgb(0.20, 1.00, 0.95)
+
+mat_pillar = material:
+    albedo: color.rgb(0.15, 0.25, 0.40)
+    metallic: 0.50
+    roughness: 0.50
+
+# 4. Lighting & Camera
+arena_sun = light.directional:
+    position: vec3(25.0, 45.0, 25.0)
+    color: color.rgb(1.0, 0.95, 0.90)
+    intensity: 1.4
+
+ambient_fill = light.ambient:
+    color: color.rgb(0.18, 0.20, 0.28)
+
+main_cam = camera.third_person:
+    fov: 65.0
+    pitch: 24.0
+    yaw: 0.0
+    offset: vec3(0.0, 7.0, 13.0)
+    smooth_lag: 0.12
+
+# 5. Visual Particle Effects
+blaster_fx = particle_emitter:
+    rate: 15.0
+    color: color.rgb(0.0, 1.0, 0.9)
+    speed: 4.0
+    lifetime: 0.2
+
+detonation_fx = particle_emitter:
+    rate: 80.0
+    color: color.rgb(1.0, 0.4, 0.1)
+    speed: 12.0
+    lifetime: 0.7
+
+# 6. World Setup & Entities
+player = mesh.create_cube(mat_player)
+
+on_start:
+    player.position = vec3(0.0, 1.5, 0.0)
+    player.tag = "player"
+
+    # Attach physics rigid body
+    rigidbody.attach(player):
+        gravity: true
+        mass: 1.0
+        collider: collider.box(vec3(1.0, 1.0, 1.0))
+
+    # Spawn 4 pillars in the arena
+    mesh.create_pillar(vec3(-15.0, 0.0, -15.0), mat_pillar)
+    mesh.create_pillar(vec3( 15.0, 0.0, -15.0), mat_pillar)
+    mesh.create_pillar(vec3(-15.0, 0.0,  15.0), mat_pillar)
+    mesh.create_pillar(vec3( 15.0, 0.0,  15.0), mat_pillar)
+
+    # Initial drone squad
+    spawn_drone(vec3(-20.0, 1.2, -10.0))
+    spawn_drone(vec3( 20.0, 1.2, -15.0))
+    spawn_drone(vec3(  0.0, 1.2, -25.0))
+
+# 7. Enemy Spawner Function
+def spawn_drone(spawn_pos):
+    drone = mesh.create_cube(mat_drone)
+    drone.position = spawn_pos
+    drone.tag = "enemy"
+    drone.health = 50.0
+
+    rigidbody.attach(drone):
+        gravity: false
+        collider: collider.sphere(1.2)
+
+every 3.0 seconds:
+    if not game_over:
+        rx = random(-30.0, 30.0)
+        rz = random(-30.0, 30.0)
+        spawn_drone(vec3(rx, 1.2, rz))
+
+# 8. Main Frame Loop
+on_update(dt):
+    if game_over:
+        hud.show_game_over(score)
+        if is_key_pressed("R"):
+            restart_game()
+        return
+
+    # Player movement
+    move_dir = vec3(0, 0, 0)
+    if is_key_down("W") or is_key_down("UP"):
+        move_dir.z -= 1.0
+    if is_key_down("S") or is_key_down("DOWN"):
+        move_dir.z += 1.0
+    if is_key_down("A") or is_key_down("LEFT"):
+        move_dir.x -= 1.0
+    if is_key_down("D") or is_key_down("RIGHT"):
+        move_dir.x += 1.0
+
+    if move_dir.length_sq() > 0.01:
+        move_dir = move_dir.normalized()
+        player.velocity.x = move_dir.x * player_speed
+        player.velocity.z = move_dir.z * player_speed
+        player.rotation.y = atan2(-move_dir.x, -move_dir.z)
+        blaster_fx.emit(player.position - vec3(0, 0.5, 0), 1)
+    else:
+        player.velocity.x *= 0.85
+        player.velocity.z *= 0.85
+
+    # Jump
+    if is_key_pressed("SPACE") and player.is_grounded:
+        player.velocity.y = jump_force
+        player.is_grounded = false
+
+    # Camera tracking
+    main_cam.follow(player.position)
+
+    # Shooting
+    if current_cooldown > 0.0:
+        current_cooldown -= dt
+
+    if is_mouse_down("LEFT") and current_cooldown <= 0.0:
+        current_cooldown = shoot_cooldown
+        fire_plasma_bolt()
+
+    # Enemy AI
+    for each drone in get_entities_by_tag("enemy"):
+        to_player = player.position - drone.position
+        dist = to_player.length()
+
+        if dist > 1.2:
+            dir = to_player.normalized()
+            drone.position += dir * 4.5 * dt
+            drone.rotation.y = atan2(-dir.x, -dir.z)
+        else:
+            player_health -= 15.0 * dt
+            sound3d.play("hit_flesh.wav", player.position)
+            if player_health <= 0.0:
+                player_health = 0.0
+                game_over = true
+
+        drone.position.y = 1.2 + 0.3 * sin(time() * 5.0)
+
+    # Update HUD
+    hud.set_health(player_health)
+    hud.set_score(score)
+
+def fire_plasma_bolt():
+    spawn_pos = player.position + vec3(0, 0.5, 0)
+    forward = player.get_forward_vector()
+
+    bolt = mesh.create_laser(mat_laser)
+    bolt.position = spawn_pos
+    bolt.tag = "projectile"
+
+    rigidbody.attach(bolt):
+        gravity: false
+        velocity: forward * 45.0
+        collider: collider.sphere(0.4)
+
+    blaster_fx.burst(spawn_pos, 8, color.rgb(0.0, 1.0, 0.9))
+    sound3d.play("plasma_blast.wav", spawn_pos)
+
+# 9. Collision Physics Event
+on_collision(entity_a, entity_b):
+    if entity_a.tag == "projectile" and entity_b.tag == "enemy":
+        entity_a.destroy()
+        entity_b.health -= 25.0
+
+        detonation_fx.burst(entity_b.position, 20, color.rgb(1.0, 0.6, 0.1))
+
+        if entity_b.health <= 0.0:
+            entity_b.destroy()
+            score += 100.0
+            detonation_fx.burst(entity_b.position, 40, color.rgb(1.0, 0.2, 0.1))
+            sound3d.play("drone_explode.wav", entity_b.position)
+
+
